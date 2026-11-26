@@ -1,23 +1,25 @@
 from __future__ import annotations
 
+import itertools
+import json
+import os
 import re
 import sys
 import textwrap
+from pathlib import Path
 
-VERSION = "v4 (menú + conectores lógicos)"
+VERSION = "v7 (Árbol Conjunto con Zoom y Filtros)"
 COMANDO_VOLVER = "volver"
+ARCHIVO_JSON = Path(__file__).resolve().parent / "proposiciones.json"
+MAX_VARIABLES = 10  # Permite evaluar hasta 10 variables atómicas simultáneas
 
-# --------------------------------------------------------------- conectores
-# Palabra del texto -> símbolo del conector lógico (según la tabla de conectores)
 CONECTORES_PALABRA = {
-    "y": "∧",                # Conjunción:           p y q
-    "o": "∨",                # Disyunción:           p o q
-    "entonces": "⇒",         # Condicional:          si p entonces q
-    "si y solo si": "↔",     # Bicondicional:        p si y solo si q
+    "y": "∧",
+    "o": "∨",
+    "entonces": "⇒",
+    "si y solo si": "↔",
 }
-# La disyunción exclusiva (Δ) se detecta con el patrón "o p o q":
-# el texto inicia con 'o' y después aparece otra 'o'.
-NEGACION = "no"              # Negación:             no p  ->  ~p
+NEGACION = "no"
 
 NOMBRES = {
     "∧": "Conjunción",
@@ -28,36 +30,21 @@ NOMBRES = {
     "~": "Negación",
 }
 
-# Precedencia de menor a mayor (para decidir dónde van los paréntesis)
 ORDEN_PRECEDENCIA = ["↔", "⇒", "Δ", "∨", "∧"]
 ASOCIATIVOS = {"Δ", "∨", "∧"}
 
-# Se prueba 'si y solo si' primero para que no se confunda con 'si' ni 'y'
 PATRON_CONECTORES = re.compile(r"\b(si\s+y\s+s[oó]lo\s+si|entonces|o|y)\b")
-
 LETRAS = "pqrstuvwxyz"
 
-# ----------------------------------------------------------- almacenamiento
-# "001" -> {"original", "proposiciones", "negadas", "letras",
-#           "conectores", "esquema", "tipos"}
 reglas = {}
-
-# Diccionario de proposiciones atómicas:
-# "llueve" -> [{"regla": "001", "posicion": 1, "negada": False}, ...]
 indice_proposiciones = {}
 
 
-# ---------------------------------------------------------------- análisis
 def normalizar(texto: str) -> str:
-    """Minúsculas, sin espacios al inicio/final y espacios internos simples."""
     return re.sub(r"\s+", " ", texto.strip().lower())
 
 
 def detectar_negacion(proposicion: str) -> tuple[str, bool]:
-    """
-    Devuelve (proposición sin 'no', negada).
-    Un número impar de 'no' se considera negada (dos 'no' se cancelan).
-    """
     patron = rf"\b{NEGACION}\b"
     cantidad = len(re.findall(patron, proposicion))
     limpia = re.sub(patron, "", proposicion)
@@ -75,11 +62,6 @@ def _envolver(items: list[str], conectores: list[str]) -> str:
 
 
 def construir_esquema(items: list[str], conectores: list[str]) -> str:
-    """
-    Arma el esquema respetando la precedencia:
-    ∧ (mayor) > ∨ > Δ > ⇒ > ↔ (menor). Agrega paréntesis donde hace falta.
-    conectores[i] une items[i] con items[i + 1].
-    """
     if not conectores:
         return items[0]
 
@@ -96,7 +78,6 @@ def construir_esquema(items: list[str], conectores: list[str]) -> str:
             partes.append(_envolver(items[inicio:], conectores[inicio:]))
             return f" {op} ".join(partes)
 
-        # ⇒ y ↔ no son asociativos: se divide en la primera aparición
         i = posiciones[0]
         izq = _envolver(items[:i + 1], conectores[:i])
         der = _envolver(items[i + 1:], conectores[i + 1:])
@@ -106,16 +87,9 @@ def construir_esquema(items: list[str], conectores: list[str]) -> str:
 
 
 def interpretar(texto: str) -> dict:
-    """
-    Analiza el texto y devuelve:
-      proposiciones, negadas, letras (arreglos paralelos),
-      conectores (entre proposiciones consecutivas), esquema, tipos,
-      advertencias.
-    """
     texto = normalizar(texto)
     advertencias = []
 
-    # 'si p entonces q'  y  'o p o q' llevan una palabra al inicio
     inicia_si = inicia_o = False
     if re.match(r"si\b(?!\s+y\s+s[oó]lo\s+si)", texto):
         inicia_si = True
@@ -136,10 +110,7 @@ def interpretar(texto: str) -> dict:
 
         if not limpia:
             if len(fragmentos) > 1:
-                advertencias.append(
-                    "Hay un conector sin proposición a un lado; "
-                    "se ignoró ese fragmento."
-                )
+                advertencias.append("Hay un conector sin proposición a un lado; se ignoró.")
             if proposiciones and pendiente is None:
                 pendiente = antes
             continue
@@ -150,26 +121,11 @@ def interpretar(texto: str) -> dict:
 
         proposiciones.append(limpia)
         negadas.append(negada)
-        if re.search(r"\bsi\b", limpia):
-            advertencias.append(
-                f"La palabra 'si' dentro de '{limpia}' no se reconoce como "
-                "conector (usa 'si ... entonces ...' o 'si y solo si')."
-            )
 
-    conectores = [CONECTORES_PALABRA[w] for w in conectores_palabra]
+    conectores = [CONECTORES_PALABRA[w] for w in conectores_palabra if w in CONECTORES_PALABRA]
     if inicia_o:
         conectores = ["Δ" if c == "∨" else c for c in conectores]
-        if "Δ" not in conectores:
-            advertencias.append(
-                "El texto inicia con 'o' pero falta el segundo 'o' "
-                "(disyunción exclusiva: 'o p o q')."
-            )
-    if inicia_si and "⇒" not in conectores:
-        advertencias.append(
-            "El texto inicia con 'si' pero falta 'entonces' (si p entonces q)."
-        )
 
-    # Letra de cada proposición (la misma proposición conserva su letra)
     letras_por_prop, letras = {}, []
     for p in proposiciones:
         if p not in letras_por_prop:
@@ -183,7 +139,7 @@ def interpretar(texto: str) -> dict:
 
     tipos = []
     for c in conectores:
-        etiqueta = f"{NOMBRES[c]} ({c})"
+        etiqueta = f"{NOMBRES.get(c, c)} ({c})"
         if etiqueta not in tipos:
             tipos.append(etiqueta)
     if any(negadas):
@@ -200,34 +156,212 @@ def interpretar(texto: str) -> dict:
     }
 
 
-# ------------------------------------------------------------ comparadores
-def comparar_proposicion(proposicion: str, negada: bool) -> list[dict]:
-    """Busca la proposición en las ya almacenadas (misma negación u opuesta)."""
-    return [
-        {**c, "misma_negacion": c["negada"] == negada}
-        for c in indice_proposiciones.get(proposicion, [])
-    ]
+def reconstruir_indice() -> None:
+    indice_proposiciones.clear()
+    for id_regla in sorted(reglas, key=int):
+        r = reglas[id_regla]
+        for pos, (p, n) in enumerate(zip(r["proposiciones"], r["negadas"]), start=1):
+            indice_proposiciones.setdefault(p, []).append(
+                {"regla": id_regla, "posicion": pos, "negada": n}
+            )
 
 
-def comparar_regla(analisis: dict) -> list[str]:
-    """ID de las reglas almacenadas idénticas (proposiciones, negaciones y conectores)."""
-    return [
-        id_regla
-        for id_regla, r in reglas.items()
-        if r["proposiciones"] == analisis["proposiciones"]
-        and r["negadas"] == analisis["negadas"]
-        and r["conectores"] == analisis["conectores"]
-    ]
+def guardar_json() -> tuple[bool, str]:
+    datos = {
+        "version": 1,
+        "proposiciones_atomicas": sorted(indice_proposiciones),
+        "reglas": reglas,
+    }
+    temporal = ARCHIVO_JSON.with_name(ARCHIVO_JSON.name + ".tmp")
+    try:
+        with open(temporal, "w", encoding="utf-8") as f:
+            json.dump(datos, f, ensure_ascii=False, indent=2)
+        os.replace(temporal, ARCHIVO_JSON)
+        return True, ""
+    except OSError as error:
+        return False, str(error)
 
 
-# ------------------------------------------------------------ almacenamiento
-def generar_id() -> str:
-    return f"{len(reglas) + 1:03d}"
+def cargar_json() -> tuple[bool, str]:
+    reglas.clear()
+    indice_proposiciones.clear()
+    if not ARCHIVO_JSON.exists():
+        return True, ""
+    try:
+        with open(ARCHIVO_JSON, encoding="utf-8") as f:
+            datos = json.load(f)
+        for id_regla in sorted(datos["reglas"], key=int):
+            r = datos["reglas"][id_regla]
+            reglas[str(id_regla)] = {
+                "original": str(r["original"]),
+                "proposiciones": [str(p) for p in r["proposiciones"]],
+                "negadas": [bool(n) for n in r["negadas"]],
+                "letras": [str(x) for x in r["letras"]],
+                "conectores": [str(c) for c in r["conectores"]],
+                "esquema": str(r["esquema"]),
+                "tipos": [str(t) for t in r["tipos"]],
+            }
+    except Exception as error:
+        return False, f"Error al cargar JSON: {error}"
+    reconstruir_indice()
+    return True, ""
 
 
-def almacenar_regla(id_regla: str, original: str, analisis: dict) -> None:
+def obtener_mapeo_global_proposiciones(ids_reglas: list[str] = None) -> tuple[dict[str, str], dict[str, str]]:
+    if ids_reglas is None:
+        ids_reglas = list(reglas.keys())
+
+    props_unicas = []
+    for id_r in ids_reglas:
+        if id_r in reglas:
+            for p in reglas[id_r]["proposiciones"]:
+                if p not in props_unicas:
+                    props_unicas.append(p)
+
+    prop_a_letra = {}
+    letra_a_prop = {}
+    for i, p in enumerate(props_unicas):
+        letra = nombre_letra(i)
+        prop_a_letra[p] = letra
+        letra_a_prop[letra] = p
+    return prop_a_letra, letra_a_prop
+
+
+def evaluar(valores: list[bool], conectores: list[str]) -> bool:
+    if not conectores:
+        return valores[0]
+
+    for op in ORDEN_PRECEDENCIA:
+        if op not in conectores:
+            continue
+        posiciones = [i for i, c in enumerate(conectores) if c == op]
+
+        if op in ASOCIATIVOS:
+            partes, inicio = [], 0
+            for i in posiciones:
+                partes.append(evaluar(valores[inicio:i + 1], conectores[inicio:i]))
+                inicio = i + 1
+            partes.append(evaluar(valores[inicio:], conectores[inicio:]))
+            if op == "∧":
+                return all(partes)
+            if op == "∨":
+                return any(partes)
+            return sum(partes) == 1
+
+        i = posiciones[0]
+        izq = evaluar(valores[:i + 1], conectores[:i])
+        der = evaluar(valores[i + 1:], conectores[i + 1:])
+        return (not izq) or der if op == "⇒" else izq == der
+
+    return valores[0]
+
+
+def evaluar_regla_global(regla: dict, asignacion_global: dict, prop_a_letra: dict) -> bool:
+    valores = []
+    for p, n in zip(regla["proposiciones"], regla["negadas"]):
+        letra = prop_a_letra[p]
+        val = asignacion_global[letra]
+        valores.append((not val) if n else val)
+    return evaluar(valores, regla["conectores"])
+
+
+def evaluar_conjunto_reglas(asignacion_global: dict, prop_a_letra: dict, ids_reglas: list[str] = None) -> bool:
+    if ids_reglas is None:
+        ids_reglas = list(reglas.keys())
+    return all(evaluar_regla_global(reglas[id_r], asignacion_global, prop_a_letra) for id_r in ids_reglas if id_r in reglas)
+
+
+def esquema_conjunto_reglas(ids_reglas: list[str] = None) -> str:
+    if ids_reglas is None:
+        ids_reglas = list(reglas.keys())
+    if not ids_reglas:
+        return ""
+    prop_a_letra, _ = obtener_mapeo_global_proposiciones(ids_reglas)
+    esquemas = []
+    for id_r in ids_reglas:
+        if id_r in reglas:
+            r = reglas[id_r]
+            items = [("~" if n else "") + prop_a_letra[p] for p, n in zip(r["proposiciones"], r["negadas"])]
+            esquemas.append(f"({construir_esquema(items, r['conectores'])})")
+    return " ∧ ".join(esquemas)
+
+
+def construir_arbol_conjunto(ids_reglas: list[str] = None, podar: bool = True) -> dict | None:
+    if ids_reglas is None:
+        ids_reglas = list(reglas.keys())
+    if not ids_reglas:
+        return None
+
+    prop_a_letra, letra_a_prop = obtener_mapeo_global_proposiciones(ids_reglas)
+    variables = list(letra_a_prop.keys())
+
+    def resultados(asignacion: dict, restantes: list[str]) -> set:
+        vistos = set()
+        for combo in itertools.product([True, False], repeat=len(restantes)):
+            full_asig = {**asignacion, **dict(zip(restantes, combo))}
+            vistos.add(evaluar_conjunto_reglas(full_asig, prop_a_letra, ids_reglas))
+            if len(vistos) == 2:
+                break
+        return vistos
+
+    def nodo(asignacion: dict) -> dict:
+        restantes = [v for v in variables if v not in asignacion]
+        vistos = resultados(asignacion, restantes)
+
+        if not restantes or (podar and len(vistos) == 1):
+            valor = next(iter(vistos)) if vistos else False
+            return {
+                "hoja": True,
+                "valor": valor,
+                "estado": "sat" if valor else "insat",
+                "filas": 2 ** len(restantes),
+                "asignacion": asignacion.copy(),
+            }
+
+        variable = restantes[0]
+        verdadero = nodo({**asignacion, variable: True})
+        falso = nodo({**asignacion, variable: False})
+
+        if verdadero["estado"] in ("sat", "mixto") or falso["estado"] in ("sat", "mixto"):
+            estado = "sat" if (verdadero["estado"] == "sat" and falso["estado"] == "sat") else "mixto"
+        else:
+            estado = "insat"
+
+        return {
+            "hoja": False,
+            "var": variable,
+            "verdadero": verdadero,
+            "falso": falso,
+            "estado": estado,
+            "asignacion": asignacion.copy(),
+        }
+
+    return nodo({})
+
+
+def obtener_ramificaciones_satisfechas(nodo: dict, camino_actual: list[tuple[str, bool]] = None) -> list[dict]:
+    if camino_actual is None:
+        camino_actual = []
+
+    if nodo["hoja"]:
+        if nodo["valor"]:
+            return [{"camino": camino_actual, "filas": nodo["filas"], "asignacion": nodo["asignacion"]}]
+        return []
+
+    res = []
+    res.extend(obtener_ramificaciones_satisfechas(nodo["verdadero"], camino_actual + [(nodo["var"], True)]))
+    res.extend(obtener_ramificaciones_satisfechas(nodo["falso"], camino_actual + [(nodo["var"], False)]))
+    return res
+
+
+def registrar_texto(texto: str) -> dict | None:
+    analisis = interpretar(texto)
+    if not analisis["proposiciones"]:
+        return None
+
+    id_regla = f"{max((int(k) for k in reglas), default=0) + 1:03d}"
     reglas[id_regla] = {
-        "original": original,
+        "original": texto.strip(),
         "proposiciones": analisis["proposiciones"],
         "negadas": analisis["negadas"],
         "letras": analisis["letras"],
@@ -235,185 +369,15 @@ def almacenar_regla(id_regla: str, original: str, analisis: dict) -> None:
         "esquema": analisis["esquema"],
         "tipos": analisis["tipos"],
     }
-    for pos, (p, n) in enumerate(
-        zip(analisis["proposiciones"], analisis["negadas"]), start=1
-    ):
-        indice_proposiciones.setdefault(p, []).append(
-            {"regla": id_regla, "posicion": pos, "negada": n}
-        )
+    reconstruir_indice()
+    guardar_json()
+
+    return {"id": id_regla, "original": texto.strip(), "analisis": analisis}
 
 
-# ----------------------------------------------------------------- salida
-def procesar_texto(texto: str) -> None:
-    analisis = interpretar(texto)
-    proposiciones = analisis["proposiciones"]
-    negadas = analisis["negadas"]
-
-    if not proposiciones:
-        print("  No se detectaron proposiciones en el texto.\n")
-        return
-
-    # Se compara ANTES de almacenar, para no compararla consigo misma
-    reglas_iguales = comparar_regla(analisis)
-    coincidencias = [comparar_proposicion(p, n) for p, n in zip(proposiciones, negadas)]
-
-    id_regla = generar_id()
-    almacenar_regla(id_regla, texto.strip(), analisis)
-
-    print(f"\n=== Regla {id_regla} almacenada ===")
-    print(f"Texto original: {texto.strip()}")
-    print(f"Proposiciones:  {proposiciones}")
-    print(f"Negadas:        {negadas}")
-    print(f"Conectores:     {analisis['conectores']}")
-    print(f"Esquema:        {analisis['esquema']}")
-    print(f"Tipo(s):        {', '.join(analisis['tipos']) or '(ninguno)'}")
-
-    print("\nDetalle:")
-    for i, (p, n, letra, coincide) in enumerate(
-        zip(proposiciones, negadas, analisis["letras"], coincidencias), start=1
-    ):
-        print(f"  P{i} ({letra}): '{p}' -> {'NEGADA' if n else 'afirmada'}")
-        if not coincide:
-            print("      (proposición nueva)")
-        for c in coincide:
-            if c["misma_negacion"]:
-                print(
-                    f"      = igual a la proposición P{c['posicion']} "
-                    f"de la regla {c['regla']}"
-                )
-            else:
-                print(
-                    f"      ~ mismo enunciado que P{c['posicion']} de la "
-                    f"regla {c['regla']}, pero con negación opuesta"
-                )
-
-    if reglas_iguales:
-        print(f"\n>> La regla completa es IDÉNTICA a: {', '.join(reglas_iguales)}")
-    for aviso in analisis["advertencias"]:
-        print(f"\n[Advertencia] {aviso}")
-    print()
-
-
-def imprimir_tabla(encabezados: list[str], filas: list[list[list[str]]]) -> None:
-    """Cada celda es una lista de líneas."""
-    anchos = [len(h) for h in encabezados]
-    for fila in filas:
-        for j, celda in enumerate(fila):
-            for linea in celda:
-                anchos[j] = max(anchos[j], len(linea))
-
-    sep = "+" + "+".join("-" * (a + 2) for a in anchos) + "+"
-
-    def linea(celdas: list[str]) -> str:
-        return "| " + " | ".join(c.ljust(a) for c, a in zip(celdas, anchos)) + " |"
-
-    print(sep)
-    print(linea(encabezados))
-    print(sep)
-    for fila in filas:
-        alto = max(len(c) for c in fila)
-        for k in range(alto):
-            print(linea([c[k] if k < len(c) else "" for c in fila]))
-        print(sep)
-
-
-def ver_tabla() -> None:
-    if not reglas:
-        print("\nAún no hay reglas almacenadas.\n")
-        return
-
-    filas = []
-    for id_regla, r in reglas.items():
-        atomos, vistas = [], set()
-        for letra, prop in zip(r["letras"], r["proposiciones"]):
-            if letra in vistas:
-                continue
-            vistas.add(letra)
-            atomos.extend(
-                textwrap.wrap(f"{letra} = {prop}", width=45, subsequent_indent="    ")
-            )
-        filas.append([[id_regla], [r["esquema"]], r["tipos"] or ["(ninguno)"], atomos])
-
-    print("\n=== Proposiciones atómicas y esquemas ===")
-    imprimir_tabla(["Regla", "Esquema", "Conectores", "Proposiciones atómicas"], filas)
-    print(f"Reglas almacenadas: {len(reglas)}")
-    print(f"Proposiciones atómicas distintas: {len(indice_proposiciones)}\n")
-
-
-# ------------------------------------------------------------------- menú
-def leer(mensaje: str):
-    """input() que devuelve None si la entrada se cierra o se interrumpe."""
-    try:
-        return input(mensaje)
-    except (EOFError, KeyboardInterrupt):
-        print()
-        return None
-
-
-def modo_agregar() -> None:
-    print("\n--- Agregar nuevas proposiciones ---")
-    print("Conectores reconocidos: y | o | o ... o | si ... entonces | si y solo si | no")
-    print(f"Escribe '{COMANDO_VOLVER}' para regresar al menú.\n")
-    while True:
-        texto = leer("Texto: ")
-        if texto is None or normalizar(texto) == COMANDO_VOLVER:
-            return
-        if not texto.strip():
-            continue
-        procesar_texto(texto)
-
-
-def mostrar_menu() -> None:
-    print("========== MENÚ ==========")
-    print("1. Agregar nuevas proposiciones")
-    print("2. Ver proposiciones atómicas y esquemas")
-    print("3. Salir")
-
-
-def main() -> None:
-    # Evita errores de codificación en consolas de Windows
-    try:
-        sys.stdout.reconfigure(errors="replace")
-    except Exception:
-        pass
-
-    print(f"proposiciones.py {VERSION}")
-    if not sys.stdin.isatty():
-        print(
-            "AVISO: este entorno no es una terminal interactiva, por lo que "
-            "no se pueden escribir textos.\nEjecútalo desde la terminal "
-            "(python proposiciones.py)."
-        )
-    print()
-
-    while True:
-        mostrar_menu()
-        opcion = leer("Opción: ")
-        if opcion is None:
-            break
-        opcion = normalizar(opcion)
-        if opcion == "1":
-            modo_agregar()
-        elif opcion == "2":
-            ver_tabla()
-        elif opcion in ("3", "salir"):
-            break
-        else:
-            print("Opción no válida. Elige 1, 2 o 3.\n")
-        print()
-
-    print(f"\nReglas almacenadas: {len(reglas)}")
-    print(f"Proposiciones atómicas distintas: {len(indice_proposiciones)}")
-
-
-if __name__ == "__main__":
-    try:
-        main()
-    except Exception:
-        import traceback
-
-        traceback.print_exc()
-    try:
-        input("\nPresiona Enter para cerrar...")
-    except (EOFError, KeyboardInterrupt):
-        pass
+def eliminar_regla(id_regla: str) -> tuple[bool, str]:
+    if id_regla not in reglas:
+        return False, "La regla no existe."
+    del reglas[id_regla]
+    reconstruir_indice()
+    return guardar_json()

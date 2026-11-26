@@ -1,0 +1,78 @@
+{
+  "version": 1,
+  "proposiciones_atomicas": [
+    "llueve",
+    "me muevo en coche",
+    "me presentare al trabajo",
+    "me presentare en el trabajo"
+  ],
+  "reglas": {
+    "001": {
+      "original": "si llueve entonces no me presentare en el trabajo",
+      "proposiciones": [
+        "llueve",
+        "me presentare en el trabajo"
+      ],
+      "negadas": [
+        false,
+        true
+      ],
+      "letras": [
+        "p",
+        "q"
+      ],
+      "conectores": [
+        "⇒"
+      ],
+      "esquema": "p ⇒ ~q",
+      "tipos": [
+        "Condicional (⇒)",
+        "Negación (~)"
+      ]
+    },
+    "003": {
+      "original": "si llueve entonces me muevo en coche",
+      "proposiciones": [
+        "llueve",
+        "me muevo en coche"
+      ],
+      "negadas": [
+        false,
+        false
+      ],
+      "letras": [
+        "p",
+        "q"
+      ],
+      "conectores": [
+        "⇒"
+      ],
+      "esquema": "p ⇒ q",
+      "tipos": [
+        "Condicional (⇒)"
+      ]
+    },
+    "004": {
+      "original": "si me muevo en coche entonces me presentare al trabajo",
+      "proposiciones": [
+        "me muevo en coche",
+        "me presentare al trabajo"
+      ],
+      "negadas": [
+        false,
+        false
+      ],
+      "letras": [
+        "p",
+        "q"
+      ],
+      "conectores": [
+        "⇒"
+      ],
+      "esquema": "p ⇒ q",
+      "tipos": [
+        "Condicional (⇒)"
+      ]
+    }
+  }
+}
